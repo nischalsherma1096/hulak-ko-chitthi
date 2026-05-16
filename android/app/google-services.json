@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "530756935672",
+    "project_id": "hulak-ko-chitthi",
+    "storage_bucket": "hulak-ko-chitthi.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:530756935672:android:a50eb279b70de2f7bd800d",
+        "android_client_info": {
+          "package_name": "com.example.hulak_ko_chitthi"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBJj9MdBtEEmNKD7VA3VV-J-MAZHUQ9RwM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
