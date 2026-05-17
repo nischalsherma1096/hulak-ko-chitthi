@@ -3,13 +3,6 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 
-// ─────────────────────────────────────────────────────────────────────
-// AvatarCropScreen — full screen editor exactly like Facebook
-// - Image fills the whole screen
-// - Dark semi-transparent overlay with a circular cutout showing the crop
-// - User drags and pinches the image freely underneath
-// - "Save" captures only what's inside the circle
-// ─────────────────────────────────────────────────────────────────────
 class AvatarCropScreen extends StatefulWidget {
   final Uint8List imageBytes;
   const AvatarCropScreen({super.key, required this.imageBytes});
@@ -22,8 +15,8 @@ class _AvatarCropScreenState extends State<AvatarCropScreen> {
   static const LinearGradient _grad =
       LinearGradient(colors: [Color(0xFFF5A623), Color(0xFFBF5B0A)]);
 
-  final GlobalKey _boundaryKey = GlobalKey();
   final TransformationController _ctrl = TransformationController();
+  final GlobalKey _stackKey = GlobalKey();
   bool _saving = false;
 
   @override
@@ -35,16 +28,38 @@ class _AvatarCropScreenState extends State<AvatarCropScreen> {
   Future<void> _save() async {
     setState(() => _saving = true);
     try {
-      final boundary = _boundaryKey.currentContext!.findRenderObject()
-          as RenderRepaintBoundary;
-      final img = await boundary.toImage(pixelRatio: 2.0);
-      final data = await img.toByteData(format: ui.ImageByteFormat.png);
+      // Capture the whole Stack (image + overlay) then crop the circle out
+      final boundary =
+          _stackKey.currentContext!.findRenderObject() as RenderRepaintBoundary;
+      final fullImg = await boundary.toImage(pixelRatio: 2.0);
+      final size = MediaQuery.of(context).size;
+      final circleDia = size.width - 32;
+      final circleTop = (size.height - circleDia) / 2;
+
+      // Crop to the circle rect from the captured image
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      final r = circleDia * 2.0; // pixelRatio 2.0
+      final t = circleTop * 2.0;
+      final l = 16.0 * 2.0;
+
+      // Clip to circle then draw the relevant portion
+      canvas.clipPath(Path()..addOval(Rect.fromLTWH(0, 0, r, r)));
+      canvas.drawImageRect(
+        fullImg,
+        Rect.fromLTWH(l, t, r, r),
+        Rect.fromLTWH(0, 0, r, r),
+        Paint(),
+      );
+      final picture = recorder.endRecording();
+      final cropped = await picture.toImage(r.toInt(), r.toInt());
+      final data = await cropped.toByteData(format: ui.ImageByteFormat.png);
       if (data == null) {
         setState(() => _saving = false);
         return;
       }
       if (mounted) Navigator.of(context).pop(data.buffer.asUint8List());
-    } catch (_) {
+    } catch (e) {
       if (mounted) setState(() => _saving = false);
     }
   }
@@ -52,50 +67,20 @@ class _AvatarCropScreenState extends State<AvatarCropScreen> {
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
-    // Circle sits in the centre — same width as screen, square
     final circleDia = size.width - 32;
-    final circleTop = (size.height - circleDia) / 2;
+    final circleCenter =
+        Offset(size.width / 2, (size.height - circleDia) / 2 + circleDia / 2);
 
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(children: [
-        // ── 1. Full-screen interactive image ─────────────────────────
+        // ── Single RepaintBoundary wrapping everything ─────────────
         Positioned.fill(
-          child: InteractiveViewer(
-            transformationController: _ctrl,
-            minScale: 0.5,
-            maxScale: 8.0,
-            clipBehavior: Clip.none,
-            child: Image.memory(
-              widget.imageBytes,
-              fit: BoxFit.contain,
-              width: size.width,
-            ),
-          ),
-        ),
-
-        // ── 2. Dark overlay with circular cutout ─────────────────────
-        Positioned.fill(
-          child: IgnorePointer(
-            child: CustomPaint(
-              painter: _OverlayPainter(
-                circleCenter: Offset(size.width / 2, circleTop + circleDia / 2),
-                circleRadius: circleDia / 2,
-              ),
-            ),
-          ),
-        ),
-
-        // ── 3. RepaintBoundary — captures only the circle area ────────
-        Positioned(
-          left: 16,
-          top: circleTop,
-          width: circleDia,
-          height: circleDia,
-          child: IgnorePointer(
-            child: RepaintBoundary(
-              key: _boundaryKey,
-              child: ClipOval(
+          child: RepaintBoundary(
+            key: _stackKey,
+            child: Stack(children: [
+              // Full-screen interactive image — ONE instance only
+              Positioned.fill(
                 child: InteractiveViewer(
                   transformationController: _ctrl,
                   minScale: 0.5,
@@ -108,24 +93,34 @@ class _AvatarCropScreenState extends State<AvatarCropScreen> {
                   ),
                 ),
               ),
-            ),
+
+              // Dark overlay with circular cutout
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: CustomPaint(
+                    painter: _OverlayPainter(
+                      circleCenter: circleCenter,
+                      circleRadius: circleDia / 2,
+                    ),
+                  ),
+                ),
+              ),
+
+              // Gold circle border
+              Positioned(
+                left: 16,
+                top: (size.height - circleDia) / 2,
+                width: circleDia,
+                height: circleDia,
+                child: IgnorePointer(
+                  child: CustomPaint(painter: _CircleBorderPainter()),
+                ),
+              ),
+            ]),
           ),
         ),
 
-        // ── 4. Gold circle border ─────────────────────────────────────
-        Positioned(
-          left: 16,
-          top: circleTop,
-          width: circleDia,
-          height: circleDia,
-          child: IgnorePointer(
-            child: CustomPaint(
-              painter: _CircleBorderPainter(),
-            ),
-          ),
-        ),
-
-        // ── 5. Top bar ────────────────────────────────────────────────
+        // ── Top bar (outside RepaintBoundary so not captured) ──────
         Positioned(
           top: 0,
           left: 0,
@@ -139,14 +134,12 @@ class _AvatarCropScreenState extends State<AvatarCropScreen> {
                   onPressed: () => Navigator.of(context).pop(null),
                 ),
                 const Expanded(
-                  child: Text(
-                    'Drag and pinch to adjust',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600),
-                  ),
+                  child: Text('Drag and pinch to adjust',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600)),
                 ),
                 const SizedBox(width: 48),
               ]),
@@ -154,7 +147,7 @@ class _AvatarCropScreenState extends State<AvatarCropScreen> {
           ),
         ),
 
-        // ── 6. Bottom buttons ─────────────────────────────────────────
+        // ── Bottom buttons ─────────────────────────────────────────
         Positioned(
           bottom: 0,
           left: 0,
@@ -163,7 +156,6 @@ class _AvatarCropScreenState extends State<AvatarCropScreen> {
             child: Padding(
               padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
               child: Row(children: [
-                // Cancel
                 Expanded(
                   child: GestureDetector(
                     onTap: () => Navigator.of(context).pop(null),
@@ -184,7 +176,6 @@ class _AvatarCropScreenState extends State<AvatarCropScreen> {
                   ),
                 ),
                 const SizedBox(width: 16),
-                // Save
                 Expanded(
                   child: GestureDetector(
                     onTap: _saving ? null : _save,
@@ -219,7 +210,6 @@ class _AvatarCropScreenState extends State<AvatarCropScreen> {
   }
 }
 
-// Dark overlay with a transparent circular cutout in the centre
 class _OverlayPainter extends CustomPainter {
   final Offset circleCenter;
   final double circleRadius;
@@ -228,12 +218,13 @@ class _OverlayPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final overlay = Paint()..color = Colors.black.withOpacity(0.55);
     final full = Path()..addRect(Rect.fromLTWH(0, 0, size.width, size.height));
     final hole = Path()
       ..addOval(Rect.fromCircle(center: circleCenter, radius: circleRadius));
-    final cut = Path.combine(PathOperation.difference, full, hole);
-    canvas.drawPath(cut, overlay);
+    canvas.drawPath(
+      Path.combine(PathOperation.difference, full, hole),
+      Paint()..color = Colors.black.withOpacity(0.6),
+    );
   }
 
   @override
@@ -241,7 +232,6 @@ class _OverlayPainter extends CustomPainter {
       old.circleCenter != circleCenter || old.circleRadius != circleRadius;
 }
 
-// Gold circle border
 class _CircleBorderPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
